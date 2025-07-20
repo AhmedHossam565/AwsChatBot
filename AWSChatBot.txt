@@ -1,0 +1,237 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  CognitoIdentityClient,
+  GetIdCommand,
+  GetCredentialsForIdentityCommand
+} from '@aws-sdk/client-cognito-identity';
+import {
+  LexRuntimeV2Client,
+  RecognizeTextCommand
+} from '@aws-sdk/client-lex-runtime-v2';
+import './App.css';
+
+function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [status, setStatus] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState('');
+  const [lexClient, setLexClient] = useState(null);
+  const [identityId, setIdentityId] = useState('');
+  const chatRef = useRef(null);
+
+  // Your configuration
+  const region = "us-east-1";
+  const domain = "us-east-1sg9vb1dlq.auth.us-east-1.amazoncognito.com";
+  const userPoolId = "us-east-1_Sg9VB1DlQ";
+  const clientId = "7tqh9cv1rralr071eil22c0ton";
+  const identityPoolId = "us-east-1:145cc42c-4e05-40b9-b174-1cda04a36575";
+  const botId = "BO3Z1OD2XT";
+  const botAliasId = "4NT3C154NO";
+  const localeId = "en_US";
+const REDIRECT = encodeURIComponent("http://localhost:3000/");
+
+  const loginUrl = `https://${domain}/login?client_id=${clientId}&response_type=token&scope=openid+email&redirect_uri=${REDIRECT}`;
+
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    const handleAuth = async () => {
+      if (window.location.hash.includes("id_token=")) {
+        const hash = new URLSearchParams(window.location.hash.substring(1));
+        const idToken = hash.get("id_token");
+        window.location.hash = "";
+
+        // 🔍 DEBUG: Check what we're working with
+        console.log("=== DEBUGGING AUTHENTICATION ===");
+        console.log("ID Token:", idToken ? "✓ Present" : "✗ Missing");
+        console.log("User Pool ID:", userPoolId);
+        console.log("Identity Pool ID:", identityPoolId);
+        console.log("Region:", region);
+        console.log("Client ID:", clientId);
+        
+        const loginsKey = `cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+        console.log("Logins Key:", loginsKey);
+        console.log("Expected Key:", "cognito-idp.us-east-1.amazonaws.com/us-east-1_Sg9VB1DlQ");
+        console.log("=== END DEBUG INFO ===");
+
+        setStatus("Authenticating…");
+
+        try {
+          const cognitoClient = new CognitoIdentityClient({ region });
+          console.log("✓ Cognito client created");
+
+          setStatus("Getting Identity ID...");
+          console.log("🔄 Calling GetId...");
+
+          const getIdResp = await cognitoClient.send(new GetIdCommand({
+            IdentityPoolId: identityPoolId,
+            Logins: {
+              [`cognito-idp.${region}.amazonaws.com/${userPoolId}`]: idToken
+            }
+          }));
+
+          console.log("✓ GetId response:", getIdResp);
+          const identityId = getIdResp.IdentityId;
+          console.log("✓ Identity ID:", identityId);
+
+          setStatus("Getting credentials...");
+          console.log("🔄 Calling GetCredentialsForIdentity...");
+
+          const credsResp = await cognitoClient.send(new GetCredentialsForIdentityCommand({
+            IdentityId: identityId,
+            Logins: {
+              [`cognito-idp.${region}.amazonaws.com/${userPoolId}`]: idToken
+            }
+          }));
+
+          console.log("✓ Credentials received");
+          const { AccessKeyId, SecretKey, SessionToken } = credsResp.Credentials;
+
+          setStatus(`Signed in (ID: ${identityId})`);
+          setIsAuthenticated(true);
+          setIdentityId(identityId);
+
+          const lex = new LexRuntimeV2Client({
+            region,
+            credentials: {
+              accessKeyId: AccessKeyId,
+              secretAccessKey: SecretKey,
+              sessionToken: SessionToken,
+            }
+          });
+
+          setLexClient(lex);
+          console.log("✅ Authentication successful!");
+
+        } catch (err) {
+          setStatus("Error: " + err.message);
+          console.error("❌ Authentication error:", err);
+          console.error("Error details:", {
+            name: err.name,
+            message: err.message,
+            code: err.code || err.$metadata?.httpStatusCode
+          });
+        }
+      }
+    };
+
+    handleAuth();
+  }, [region, userPoolId, identityPoolId]);
+
+  const handleLogin = () => {
+    console.log("🔗 Redirecting to login URL:", loginUrl);
+    window.location.href = loginUrl;
+  };
+
+  const handleLogout = () => {
+    const logoutUrl = `https://${domain}/logout?client_id=${clientId}&logout_uri=${REDIRECT}`;
+    console.log("🔗 Redirecting to logout URL:", logoutUrl);
+    window.location.href = logoutUrl;
+  };
+
+  const sendMessage = async () => {
+    if (!inputText.trim() || !lexClient) return;
+
+    const userMessage = inputText.trim();
+    setInputText('');
+    setMessages(prev => [...prev, { text: userMessage, sender: 'user' }]);
+
+    try {
+      console.log("🤖 Sending message to Lex:", userMessage);
+      
+      const resp = await lexClient.send(new RecognizeTextCommand({
+        botId,
+        botAliasId,
+        localeId,
+        sessionId: identityId,
+        text: userMessage
+      }));
+      
+      console.log("🤖 Lex response:", resp);
+      const botReply = resp.messages?.[0]?.content || "(no reply)";
+      setMessages(prev => [...prev, { text: botReply, sender: 'bot' }]);
+      
+    } catch (err) {
+      console.error("❌ Lex error:", err);
+      setMessages(prev => [...prev, { text: "ERROR: " + err.message, sender: 'bot' }]);
+    }
+  };
+
+  return (
+    <div style={{ fontFamily: 'Arial, sans-serif', maxWidth: '600px', margin: '2em auto' }}>
+      <h1>Cognito + Lex Chatbot</h1>
+      
+      {!isAuthenticated ? (
+        <div>
+          <button 
+            onClick={handleLogin} 
+            style={{ padding: '0.5em 1em', margin: '0.5em 0.5em 0.5em 0' }}
+          >
+            Login
+          </button>
+          <p style={{ fontStyle: 'italic', color: '#666' }}>{status}</p>
+          
+          {/* Debug info */}
+          <details style={{ marginTop: '2em', padding: '1em', background: '#f0f0f0', fontSize: '0.8em' }}>
+            <summary>🔍 Debug Info (click to expand)</summary>
+            <pre style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
+              Region: {region}{'\n'}
+              User Pool ID: {userPoolId}{'\n'}
+              Client ID: {clientId}{'\n'}
+              Identity Pool ID: {identityPoolId}{'\n'}
+              Login URL: {loginUrl}{'\n'}
+              Redirect URI: {decodeURIComponent(REDIRECT)}
+            </pre>
+          </details>
+        </div>
+      ) : (
+        <div>
+          <button 
+            onClick={handleLogout} 
+            style={{ padding: '0.5em 1em', margin: '0.5em 0.5em 0.5em 0' }}
+          >
+            Logout
+          </button>
+          <p style={{ fontStyle: 'italic', color: '#666' }}>{status}</p>
+          
+          <div 
+            ref={chatRef}
+            style={{ 
+              border: '1px solid #ccc', 
+              height: '250px', 
+              overflowY: 'auto', 
+              margin: '1em 0', 
+              padding: '1em', 
+              background: '#f5f5f5' 
+            }}
+          >
+            {messages.map((msg, idx) => (
+              <p key={idx} style={{
+                color: msg.sender === 'user' ? 'blue' : 'green',
+                textAlign: msg.sender === 'user' ? 'right' : 'left',
+                margin: '0.5em 0'
+              }}>
+                {msg.text}
+              </p>
+            ))}
+          </div>
+          
+          <input
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+            placeholder="Type to the bot…"
+            style={{ width: '80%', padding: '0.5em', marginRight: '0.5em' }}
+          />
+          <button onClick={sendMessage}>Send</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
