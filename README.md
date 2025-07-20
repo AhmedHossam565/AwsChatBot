@@ -1,1 +1,1 @@
-# AwsChatBot
+The AWS chatbot project integrates Amazon Cognito for secure user authentication, Amazon Lex V2 for natural language interaction, AWS Lambda for backend logic, and DynamoDB for storing chat history—all in a fully serverless and scalable architecture. This design ensures security with short-lived credentials, elasticity with auto-scaling services, and cost-efficiency via pay-per-use pricing. By enforcing least-privilege IAM policies and logging actions with CloudWatch, the system supports compliance, abuse prevention, and user-specific personalization.
